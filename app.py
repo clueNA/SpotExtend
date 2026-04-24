@@ -329,7 +329,7 @@ def load_and_process(file_contents: list[bytes]) -> pd.DataFrame:
     df["month"] = df["ts"].dt.month
     df["day"] = df["ts"].dt.day
     df["hour"] = df["ts"].dt.hour
-    df["month_label"] = df["ts"].dt.tz_localize(None).dt.to_period("M").astype(str)
+    df["month_label"] = df["ts"].dt.tz_convert(None).dt.to_period("M").astype(str)
 
     # ---- Duration ----
     df["ms_played"] = pd.to_numeric(df["ms_played"], errors="coerce").fillna(0)
@@ -354,17 +354,14 @@ def load_and_process(file_contents: list[bytes]) -> pd.DataFrame:
         df[bool_col] = df[bool_col].fillna(False)
 
     # ---- Classify video vs audio ----
-    # Spotify marks video episodes/shows differently; use available signals.
+    # The Spotify Extended History schema does not expose a dedicated video
+    # flag.  We infer video streams from platform keywords.  All other
+    # streams are treated as audio (the vast majority of Spotify usage).
     video_pattern = re.compile(r"video|youtube|watch", re.IGNORECASE)
 
     def _is_video(row: pd.Series) -> bool:
         platform = str(row.get("platform", "") or "")
-        if video_pattern.search(platform):
-            return True
-        episode_uri = str(row.get("spotify_episode_uri", "") or "")
-        if episode_uri.startswith("spotify:episode:"):
-            return False
-        return False
+        return bool(video_pattern.search(platform))
 
     if "episode_show_name" in df.columns:
         df["is_podcast"] = df["episode_show_name"].notna()
@@ -640,7 +637,11 @@ def compute_genre_hours(
                     for broad, keywords in GENRE_KEYWORDS.items():
                         if any(kw in g_lower for kw in keywords):
                             mapped.add(broad)
-                for broad in mapped or {"Other"}:
+                if mapped:
+                    broad_genres = mapped
+                else:
+                    broad_genres = {"Other"}
+                for broad in broad_genres:
                     genre_hours[broad] = genre_hours.get(broad, 0) + hours
                 continue
         # keyword fallback
@@ -1015,7 +1016,7 @@ def main():
             | 🎬 Video | {len(video_df):,} | {v_hours:,.1f} |
             """
         )
-        if not df["is_podcast"].all():
+        if df["is_podcast"].any():
             podcast_df = df[df["is_podcast"]]
             if not podcast_df.empty:
                 st.markdown(
